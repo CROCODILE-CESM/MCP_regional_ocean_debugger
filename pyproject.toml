@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "regional-ocean-debugger-mcp"
+version = "0.1.0"
+description = "MCP server for debugging regional ocean (MOM6/CESM) model runs with scientific domain knowledge"
+requires-python = ">=3.11"
+dependencies = ["fastmcp>=2.0"]
+
+[project.scripts]
+regional-ocean-debugger-mcp = "server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tools"]
