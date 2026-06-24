@@ -1,9 +1,10 @@
 """
 Domain knowledge search over expert interview transcripts.
 
-Transcripts live in data/transcripts/ as a git submodule containing:
-- merged_for_finetuning.jsonl  — 219 Q&A pairs, one per line
-- Edited_Transcript_*.json     — full interview conversations
+Transcripts live in data/transcripts/ as a git submodule
+(AidanJanney/RegionalOceanModelingInterviews) containing:
+- data/merged_for_finetuning.jsonl  — Q&A pairs, one per line
+- transcripts/Edited_Transcript_*.json — full interview conversations
 
 At startup we load all Q&A pairs into memory for fast keyword search.
 The search is intentionally simple (keyword overlap) so it works without
@@ -19,7 +20,7 @@ from functools import lru_cache
 # Path to transcript data, relative to this file's package root
 _SCRIPT_DIR = Path(__file__).parent.parent
 _TRANSCRIPTS_DIR = _SCRIPT_DIR / "data" / "transcripts"
-_MERGED_JSONL = _TRANSCRIPTS_DIR / "merged_for_finetuning.jsonl"
+_MERGED_JSONL = _TRANSCRIPTS_DIR / "data" / "merged_for_finetuning.jsonl"
 
 
 @lru_cache(maxsize=1)
@@ -71,7 +72,7 @@ def query_domain_knowledge(question: str, top_k: int = 5) -> str:
         return (
             "Knowledge base not available. "
             "Ensure data/transcripts/ submodule is initialised:\n"
-            "  git submodule update --init data/transcripts"
+            "  git submodule update --init --remote data/transcripts"
         )
 
     top_k = min(top_k, 10)
@@ -110,7 +111,7 @@ def get_parameter_advice(param_name: str) -> str:
         return (
             "Knowledge base not available. "
             "Ensure data/transcripts/ submodule is initialised:\n"
-            "  git submodule update --init data/transcripts"
+            "  git submodule update --init --remote data/transcripts"
         )
 
     param_lower = param_name.lower()
