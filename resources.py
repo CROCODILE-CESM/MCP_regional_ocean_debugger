@@ -48,13 +48,13 @@ def case_errors_resource(case_dir: str) -> str:
 @mcp.resource("ocean://knowledge/index")
 def knowledge_index() -> str:
     """Summary of what's in the expert interview knowledge base."""
-    jsonl = Path(__file__).parent / "data" / "transcripts" / "merged_for_finetuning.jsonl"
+    jsonl = Path(__file__).parent / "data" / "transcripts" / "data" / "merged_for_finetuning.jsonl"
     if not jsonl.exists():
-        return "Knowledge base not available — run: git submodule update --init data/transcripts"
+        return "Knowledge base not available — run: git submodule update --init --remote data/transcripts"
     count = sum(1 for l in jsonl.read_text().splitlines() if l.strip())
     return (
         f"Knowledge base: {count} expert Q&A pairs\n"
-        "Source: RegionalMOM6_InterviewTranscripts (private)\n"
+        "Source: AidanJanney/RegionalOceanModelingInterviews\n"
         "Topics: MOM6 configuration, OBC, tides, bathymetry, stability, BGC, "
         "grid design, regional dynamics, diagnostics\n\n"
         "Use query_domain_knowledge(question) or get_parameter_advice(param) to search."
