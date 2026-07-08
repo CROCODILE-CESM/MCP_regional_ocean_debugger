@@ -12,6 +12,7 @@ from tools.params import read_mom6_params, diff_params
 from tools.stability import check_cfl, suggest_timestep
 from tools.diagnostics import read_diag_table, suggest_diagnostics
 from tools.knowledge import query_domain_knowledge, get_parameter_advice
+from tools.timing import read_cesm_timing
 
 mcp = FastMCP("regional-ocean-debugger")
 
@@ -27,6 +28,7 @@ mcp.add_tool(read_diag_table)
 mcp.add_tool(suggest_diagnostics)
 mcp.add_tool(query_domain_knowledge)
 mcp.add_tool(get_parameter_advice)
+mcp.add_tool(read_cesm_timing)
 
 
 def main():
