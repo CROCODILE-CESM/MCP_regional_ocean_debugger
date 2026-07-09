@@ -1,5 +1,6 @@
 """Tools for reading and analyzing CESM/MOM6 run logs."""
 
+import gzip
 import re
 import subprocess
 from pathlib import Path
@@ -72,10 +73,71 @@ KNOWN_ERRORS = {
 }
 
 
+def _archive_log_dir(case_dir: str) -> Path | None:
+    """Return case_dir/../archive/$CASE/logs (CIME's st_archive destination), if any.
+
+    st_archive moves run-dir logs out from under the case as soon as it runs,
+    so a case that finished and archived successfully has no logs left in
+    case_dir or case_dir/run -- only under DOUT_S_ROOT/logs. Ask CIME for the
+    real DOUT_S_ROOT rather than guessing the scratch layout.
+    """
+    case = Path(case_dir).expanduser()
+    try:
+        result = subprocess.run(
+            ["./xmlquery", "DOUT_S_ROOT", "--value"],
+            cwd=case,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+    root = result.stdout.strip()
+    if not root:
+        return None
+    log_dir = Path(root) / "logs"
+    return log_dir if log_dir.exists() else None
+
+
+def _read_text(path: Path) -> str:
+    """Read a log file's text, transparently decompressing .gz (st_archive gzips logs)."""
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", errors="replace") as f:
+            return f.read()
+    return path.read_text(errors="replace")
+
+
+_BATCH_RE = re.compile(r"^[^.]+\.log\.(?P<jobid>\d+)\.")
+
+
+def _latest_batch_only(logs: list[Path]) -> list[Path]:
+    """Keep only the logs from the most recent case.run submission (by jobid).
+
+    CIME's archive dir accumulates every past attempt's logs forever under one
+    directory -- without this, a case that failed on an earlier submission and
+    succeeded on retry shows both the old failure and the new success mixed
+    together, making a successful case look broken.
+    """
+    batches: dict[int | None, list[Path]] = {}
+    for log in logs:
+        m = _BATCH_RE.match(log.name)
+        batches.setdefault(int(m.group("jobid")) if m else None, []).append(log)
+
+    numbered = {k: v for k, v in batches.items() if k is not None}
+    if not numbered:
+        return logs
+    return numbered[max(numbered)] + batches.get(None, [])
+
+
 def _find_logs(case_dir: str, component: str) -> list[Path]:
     case = Path(case_dir).expanduser()
+    search_dirs = [case, case / "run", case / "logs"]
+    archive_dir = _archive_log_dir(case_dir)
+    if archive_dir is not None:
+        search_dirs.append(archive_dir)
+
     candidates = []
-    for d in [case, case / "run", case / "logs"]:
+    for d in search_dirs:
         if not d.exists():
             continue
         if component == "all":
@@ -83,7 +145,8 @@ def _find_logs(case_dir: str, component: str) -> list[Path]:
         else:
             candidates.extend(d.glob(f"{component}.log*"))
             candidates.extend(d.glob(f"*{component}*.log*"))
-    return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+    logs = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+    return _latest_batch_only(logs)
 
 
 def read_run_log(case_dir: str, component: str = "cesm", lines: int = 200) -> str:
@@ -91,15 +154,18 @@ def read_run_log(case_dir: str, component: str = "cesm", lines: int = 200) -> st
     Return recent lines from a CESM or MOM6 run log.
 
     component: 'cesm', 'ocn' (MOM6), 'atm', 'ice', 'rof', or 'all'.
-    Searches case_dir and case_dir/run/ for log files. Returns the most recent match.
+    Searches case_dir, case_dir/run/, and the archived logs directory
+    (DOUT_S_ROOT/logs, once st_archive has moved them) for log files.
+    Returns the most recent match.
     """
     logs = _find_logs(case_dir, component)
     if not logs:
         return f"No {component} log files found in {case_dir}"
 
     log = logs[0]
-    result = subprocess.run(["tail", f"-{lines}", str(log)], capture_output=True, text=True)
-    return f"=== {log} (last {lines} lines) ===\n{result.stdout}"
+    text = _read_text(log)
+    tail_lines = text.splitlines()[-lines:]
+    return f"=== {log} (last {lines} lines) ===\n" + "\n".join(tail_lines)
 
 
 def find_errors(case_dir: str) -> str:
@@ -107,6 +173,9 @@ def find_errors(case_dir: str) -> str:
     Scan all run logs in a CESM case for error indicators.
 
     Searches for FATAL, ERROR, NaN, CFL violations, negative thickness, OOM, and similar.
+    Searches case_dir, case_dir/run/, and the archived logs directory
+    (DOUT_S_ROOT/logs, once st_archive has moved them -- gzipped logs are
+    transparently decompressed).
     Returns a structured list of matches with filename, line number, and error type.
     Call classify_error() on the error text for probable cause and fix suggestions.
     """
@@ -118,8 +187,8 @@ def find_errors(case_dir: str) -> str:
     findings = []
     for log in logs[:10]:  # cap at 10 most recent logs
         try:
-            text = log.read_text(errors="replace")
-        except Exception as e:
+            text = _read_text(log)
+        except Exception:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for pattern, label in ERROR_PATTERNS:
