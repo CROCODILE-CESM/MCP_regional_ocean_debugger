@@ -19,6 +19,10 @@ ERROR_PATTERNS = [
     (re.compile(r"segmentation fault", re.IGNORECASE), "SEGFAULT"),
     (re.compile(r"EXITING with error", re.IGNORECASE), "FATAL"),
     (re.compile(r"stopping at", re.IGNORECASE), "STOP"),
+    # OBC forcing preprocessing errors (CrocoDash process_forcings)
+    (re.compile(r"KeyError.*bathymetry_path", re.IGNORECASE), "OBC_PREPROCESS"),
+    (re.compile(r"OBC file.*corrupt", re.IGNORECASE), "OBC_PREPROCESS"),
+    (re.compile(r"No files found.*obc|forcing_obc_segment.*not found", re.IGNORECASE), "OBC_PREPROCESS"),
 ]
 
 # Known MOM6/CESM error signatures → probable cause and suggested fix
@@ -46,6 +50,24 @@ KNOWN_ERRORS = {
     "SEGFAULT": {
         "cause": "Segmentation fault — a memory access error. Often a model bug or a corrupted restart/forcing file.",
         "fix": "Check restart files for corruption. Try a clean build (./case.build --clean-all). If persistent, file a bug report.",
+    },
+    "OBC_PREPROCESS": {
+        "cause": (
+            "OBC forcing preprocessing failure in CrocoDash process_forcings. "
+            "Common causes: (1) KeyError: 'bathymetry_path' — config is missing the bathymetry path, "
+            "which means configure_forcings was not called through a CrocoDash Case object; "
+            "(2) get_glorys_data.sh is missing some boundary entries — a race condition in threaded "
+            "dask.compute() causes concurrent writes to the script file to drop entries; "
+            "(3) OBC file is corrupt or empty — the GLORYS script was generated but not run."
+        ),
+        "fix": (
+            "For KeyError 'bathymetry_path': ensure you used Case.configure_forcings() (not a hand-crafted config). "
+            "For missing script entries: check how many copernicusmarine commands are in "
+            "extract_forcings/raw_data/get_glorys_data.sh — there should be one per boundary per time chunk. "
+            "If entries are missing, re-run process_forcings (it regenerates the script). "
+            "For script-based GLORYS: run the generated get_glorys_data.sh, then call process_forcings "
+            "again with skip_get=True to proceed to regridding."
+        ),
     },
 }
 
@@ -131,3 +153,76 @@ def classify_error(error_text: str) -> str:
             f"Error text received:\n{error_text[:500]}"
         )
     return "\n\n".join(matched)
+
+
+def check_obc_forcing_status(inputdir: str) -> str:
+    """
+    Check the status of OBC forcing preprocessing for a CrocoDash case.
+
+    Inspects the extract_forcings/ directory inside the case inputdir and reports:
+    - Whether config.json exists (configure_forcings was called)
+    - Which boundaries are expected (from boundary_number_conversion in config)
+    - Whether the GLORYS download script exists and how many boundary entries it has
+    - Which raw OBC files exist vs expected
+    - Which regridded OBC segment files exist in ocnice/
+
+    Pass the case inputdir path (e.g. ~/scratch/croc_input/my_case).
+    """
+    import json
+
+    inputdir_path = Path(inputdir).expanduser()
+    extract_dir = inputdir_path / "extract_forcings"
+    config_path = extract_dir / "config.json"
+
+    lines = [f"=== OBC Forcing Status: {inputdir_path.name} ===\n"]
+
+    if not config_path.exists():
+        lines.append("MISSING: config.json — configure_forcings() has not been called yet.")
+        return "\n".join(lines)
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    basic = config.get("basic", {})
+    boundaries = list(basic.get("general", {}).get("boundary_number_conversion", {}).keys())
+    lines.append(f"Boundaries: {boundaries}")
+
+    # GLORYS download script
+    script_path = extract_dir / "raw_data" / "get_glorys_data.sh"
+    if script_path.exists():
+        script_text = script_path.read_text()
+        script_entries = [l for l in script_text.splitlines() if "copernicusmarine" in l]
+        lines.append(f"\nGLORYS script: {script_path}")
+        lines.append(f"  Entries in script: {len(script_entries)} (expected {len(boundaries)} per time chunk)")
+        if len(script_entries) < len(boundaries):
+            lines.append(
+                "  WARNING: fewer script entries than boundaries — likely a race condition "
+                "in threaded dask.compute(). Re-run process_forcings to regenerate."
+            )
+        for entry in script_entries:
+            # Extract just the output filename
+            m = re.search(r"-f (\S+\.nc)", entry)
+            if m:
+                lines.append(f"  - {m.group(1)}")
+    else:
+        lines.append("\nGLORYS script: NOT FOUND (process_forcings not yet run, or uses RDA method)")
+
+    # Raw OBC files
+    raw_dir = extract_dir / "raw_data"
+    raw_files = sorted(raw_dir.glob("*_unprocessed*.nc")) if raw_dir.exists() else []
+    lines.append(f"\nRaw OBC files ({len(raw_files)} found):")
+    for f in raw_files:
+        size = f.stat().st_size
+        lines.append(f"  {'OK' if size > 1000 else 'EMPTY/CORRUPT'}: {f.name} ({size} bytes)")
+
+    # Regridded OBC segment files
+    ocnice_dir = inputdir_path / "ocnice"
+    seg_files = sorted(ocnice_dir.glob("forcing_obc_segment_*.nc")) if ocnice_dir.exists() else []
+    lines.append(f"\nFinal OBC segment files in ocnice/ ({len(seg_files)} found):")
+    for f in seg_files:
+        lines.append(f"  {f.name}")
+
+    if not seg_files:
+        lines.append("  NONE — regridding and merging not yet complete.")
+
+    return "\n".join(lines)
