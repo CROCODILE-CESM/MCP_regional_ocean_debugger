@@ -14,3 +14,7 @@ regional-ocean-debugger-mcp = "server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tools"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"server.py" = "server.py"
+"resources.py" = "resources.py"
