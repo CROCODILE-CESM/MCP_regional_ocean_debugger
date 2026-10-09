@@ -4,8 +4,8 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-from tools.params import _find_mom6_params, _parse_mom_params
-from tools.logs import _find_logs, ERROR_PATTERNS
+from regional_ocean_debugger_mcp.tools.params import _find_mom6_params, _parse_mom_params
+from regional_ocean_debugger_mcp.tools.logs import _find_logs, ERROR_PATTERNS
 import re
 
 mcp = FastMCP("regional-ocean-debugger-resources")
@@ -48,7 +48,7 @@ def case_errors_resource(case_dir: str) -> str:
 @mcp.resource("ocean://knowledge/index")
 def knowledge_index() -> str:
     """Summary of what's in the expert interview knowledge base."""
-    jsonl = Path(__file__).parent / "data" / "transcripts" / "data" / "merged_for_finetuning.jsonl"
+    jsonl = Path(__file__).parent.parent / "data" / "transcripts" / "data" / "merged_for_finetuning.jsonl"
     if not jsonl.exists():
         return "Knowledge base not available — run: git submodule update --init --remote data/transcripts"
     count = sum(1 for l in jsonl.read_text().splitlines() if l.strip())

@@ -18,7 +18,7 @@ from pathlib import Path
 from functools import lru_cache
 
 # Path to transcript data, relative to this file's package root
-_SCRIPT_DIR = Path(__file__).parent.parent
+_SCRIPT_DIR = Path(__file__).parent.parent.parent  # repo root (holds data/)
 _TRANSCRIPTS_DIR = _SCRIPT_DIR / "data" / "transcripts"
 _MERGED_JSONL = _TRANSCRIPTS_DIR / "data" / "merged_for_finetuning.jsonl"
 
