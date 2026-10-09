@@ -252,8 +252,12 @@ def check_obc_forcing_status(inputdir: str) -> str:
     with open(config_path) as f:
         config = json.load(f)
 
-    basic = config.get("basic", {})
-    boundaries = list(basic.get("general", {}).get("boundary_number_conversion", {}).keys())
+    # CrocoDash keeps OBC settings under "conditions"; older cases used "basic"/"general".
+    if "conditions" in config:
+        obc_outputs = config["conditions"].get("outputs", {})
+    else:
+        obc_outputs = config.get("basic", {}).get("general", {})
+    boundaries = list(obc_outputs.get("boundary_number_conversion", {}).keys())
     lines.append(f"Boundaries: {boundaries}")
 
     # GLORYS download script
@@ -284,10 +288,13 @@ def check_obc_forcing_status(inputdir: str) -> str:
         size = f.stat().st_size
         lines.append(f"  {'OK' if size > 1000 else 'EMPTY/CORRUPT'}: {f.name} ({size} bytes)")
 
-    # Regridded OBC segment files
-    ocnice_dir = inputdir_path / "ocnice"
-    seg_files = sorted(ocnice_dir.glob("forcing_obc_segment_*.nc")) if ocnice_dir.exists() else []
-    lines.append(f"\nFinal OBC segment files in ocnice/ ({len(seg_files)} found):")
+    # Regridded OBC segment files (ocn/ now; ocnice/ or ocean/ on older cases)
+    ocn_dir = next(
+        (inputdir_path / d for d in ("ocn", "ocnice", "ocean") if (inputdir_path / d).exists()),
+        inputdir_path / "ocn",
+    )
+    seg_files = sorted(ocn_dir.glob("forcing_obc_segment_*.nc")) if ocn_dir.exists() else []
+    lines.append(f"\nFinal OBC segment files in {ocn_dir.name}/ ({len(seg_files)} found):")
     for f in seg_files:
         lines.append(f"  {f.name}")
 
