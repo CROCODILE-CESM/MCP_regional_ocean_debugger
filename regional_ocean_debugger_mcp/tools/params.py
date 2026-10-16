@@ -3,11 +3,17 @@
 import re
 from pathlib import Path
 
+from .case_xml import case_dir_var
+
 
 def _find_mom6_params(case_dir: str) -> tuple[Path | None, Path | None]:
     """Return (MOM_input, MOM_override) paths for a case, or None if not found."""
     case = Path(case_dir).expanduser()
     search_dirs = [case / "run", case / "Buildconf" / "momconf", case]
+    # The run's own copies live in RUNDIR ($CIME_OUTPUT_ROOT/$CASE/run by default)
+    rundir = case_dir_var(case_dir, "RUNDIR")
+    if rundir is not None:
+        search_dirs.insert(0, rundir)
     mom_input = None
     mom_override = None
     for d in search_dirs:
@@ -27,6 +33,8 @@ def _parse_mom_params(path: Path) -> dict[str, str]:
         line = line.strip()
         if not line or line.startswith("!"):
             continue
+        # MOM_override marks overrides of MOM_input values as "#override KEY = VALUE"
+        line = line.removeprefix("#override").strip()
         # Remove inline comments
         line = re.sub(r"\s*!.*$", "", line).strip()
         if "=" in line:
@@ -72,10 +80,8 @@ def diff_params(case_dir_a: str, case_dir_b: str) -> str:
     Returns parameters that differ, with values from both cases side by side.
     Useful for diagnosing why two configurations behave differently.
     """
-    ma, _ = _find_mom6_params(case_dir_a)
-    mb, _ = _find_mom6_params(case_dir_b)
-    oa_path, _ = _find_mom6_params(case_dir_a)
-    ob_path, _ = _find_mom6_params(case_dir_b)
+    ma, oa = _find_mom6_params(case_dir_a)
+    mb, ob = _find_mom6_params(case_dir_b)
 
     if not ma:
         return f"No MOM_input found in {case_dir_a}"
@@ -86,12 +92,10 @@ def diff_params(case_dir_a: str, case_dir_b: str) -> str:
     b = _parse_mom_params(mb)
 
     # Apply overrides
-    oa_file = Path(case_dir_a).expanduser() / "run" / "MOM_override"
-    ob_file = Path(case_dir_b).expanduser() / "run" / "MOM_override"
-    if oa_file.exists():
-        a.update(_parse_mom_params(oa_file))
-    if ob_file.exists():
-        b.update(_parse_mom_params(ob_file))
+    if oa:
+        a.update(_parse_mom_params(oa))
+    if ob:
+        b.update(_parse_mom_params(ob))
 
     all_keys = sorted(set(a) | set(b))
     diffs = []

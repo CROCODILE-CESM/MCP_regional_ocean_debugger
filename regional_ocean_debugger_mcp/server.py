@@ -7,6 +7,7 @@ Domain knowledge is sourced from expert interview transcripts in data/transcript
 
 from fastmcp import FastMCP
 
+from regional_ocean_debugger_mcp.resources import register_resources
 from regional_ocean_debugger_mcp.tools.logs import read_run_log, find_errors, classify_error, check_obc_forcing_status
 from regional_ocean_debugger_mcp.tools.params import read_mom6_params, diff_params
 from regional_ocean_debugger_mcp.tools.stability import check_cfl, suggest_timestep
@@ -29,6 +30,8 @@ mcp.add_tool(suggest_diagnostics)
 mcp.add_tool(query_domain_knowledge)
 mcp.add_tool(get_parameter_advice)
 mcp.add_tool(read_cesm_timing)
+
+register_resources(mcp)
 
 
 def main():

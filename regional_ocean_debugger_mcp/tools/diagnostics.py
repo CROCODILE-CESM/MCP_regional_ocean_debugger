@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+from .case_xml import case_dir_var
+
 # Curated suggestions: symptom keywords → recommended MOM6 diagnostics
 DIAGNOSTIC_SUGGESTIONS = {
     "temperature": [
@@ -68,10 +70,13 @@ def read_diag_table(case_dir: str) -> str:
     Read and parse the MOM6 diag_table from a CESM case.
 
     Returns enabled diagnostics grouped by module/component.
-    diag_table is typically in case_dir/run/ or case_dir/Buildconf/momconf/.
+    diag_table is typically in the case's RUNDIR or case_dir/Buildconf/momconf/.
     """
     case = Path(case_dir).expanduser()
-    for d in [case / "run", case / "Buildconf" / "momconf", case]:
+    rundir = case_dir_var(case_dir, "RUNDIR")
+    for d in [rundir, case / "run", case / "Buildconf" / "momconf", case]:
+        if d is None:
+            continue
         f = d / "diag_table"
         if f.exists():
             diag_table_path = f
@@ -92,11 +97,15 @@ def read_diag_table(case_dir: str) -> str:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        # File definitions look like: "filename" freq freq_units ... (quoted string first)
-        if stripped.startswith('"') and stripped.count('"') >= 2:
-            file_defs.append(stripped)
-        elif "," in stripped and not stripped.startswith('"'):
+        tokens = [t.strip() for t in stripped.split(",")]
+        if len(tokens) < 2:
+            continue  # title and base-date lines
+        # Fields: "module", "field", "output_name", "file", ...
+        # Files:  "file_name", output_freq, "freq_units", ...
+        if tokens[1].startswith('"'):
             field_defs.append(stripped)
+        else:
+            file_defs.append(stripped)
 
     output_lines.append(f"Output files ({len(file_defs)}):")
     for f in file_defs:

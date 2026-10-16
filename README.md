@@ -11,6 +11,7 @@ Combines practical log analysis tools with a searchable knowledge base of expert
 | `read_run_log(case_dir, component, lines)` | Read recent CESM/MOM6 run log lines |
 | `find_errors(case_dir)` | Scan all logs for FATAL/NaN/CFL/etc. |
 | `classify_error(error_text)` | Match error against known MOM6 failure modes |
+| `check_obc_forcing_status(inputdir)` | Check CrocoDash forcing outputs: OBC raw data + `ocn/` segment files, IC, WW3 spectra in `wav/`, CICE forcing in `ice/` |
 | `read_mom6_params(case_dir, filter)` | Read MOM_input + MOM_override |
 | `diff_params(case_dir_a, case_dir_b)` | Compare MOM_input between two cases |
 | `check_cfl(case_dir)` | Evaluate CFL stability from MOM_input timestep settings |
@@ -19,19 +20,23 @@ Combines practical log analysis tools with a searchable knowledge base of expert
 | `suggest_diagnostics(symptoms)` | Suggest useful diagnostics for a given problem |
 | `query_domain_knowledge(question)` | Search expert interview knowledge base |
 | `get_parameter_advice(param_name)` | Look up guidance for a specific MOM6 parameter |
+| `read_cesm_timing(case_dir)` | Summarise CIME's `timing/cesm_timing.*` throughput/cost file |
 
 ## Resources
 
 | URI | Content |
 |-----|---------|
-| `ocean://case/{case_dir}/params` | Parsed MOM_input as KEY=VALUE |
-| `ocean://case/{case_dir}/errors` | Extracted errors from recent logs |
+| `ocean://case/{case_dir*}/params` | MOM_input + MOM_override as KEY = VALUE (same as `read_mom6_params`) |
+| `ocean://case/{case_dir*}/errors` | Error lines from the latest run's logs (same as `find_errors`) |
 | `ocean://knowledge/index` | Summary of knowledge base contents |
+
+`{case_dir*}` takes the case path as-is, slashes included, e.g.
+`ocean://case//glade/u/home/<user>/croc_cases/my_case/errors`.
 
 ## Knowledge Base
 
 Domain knowledge comes from expert interviews on regional MOM6 modelling (private repo:
-`AidanJanney/RegionalMOM6_InterviewTranscripts`). Topics include:
+`AidanJanney/RegionalOceanModelingInterviews`). Topics include:
 OBC setup, tidal forcing, bathymetry, stability, BGC, grid design, and regional ocean dynamics.
 
 The transcripts are a git submodule in `data/transcripts/`. After cloning this repo:
@@ -79,5 +84,6 @@ Add to `.mcp.json`:
 ## CESM / MOM6 paths on Derecho
 
 Cases: `~/croc_cases/`  
-MOM_input: `<case_dir>/run/MOM_input` or `<case_dir>/Buildconf/momconf/MOM_input`  
-diag_table: `<case_dir>/run/diag_table`
+Run dir: the case's `RUNDIR` (default `$CIME_OUTPUT_ROOT/$CASE/run`, read from `env_run.xml`)  
+MOM_input: `RUNDIR/MOM_input` or `<case_dir>/Buildconf/momconf/MOM_input`  
+diag_table: `RUNDIR/diag_table` or `<case_dir>/Buildconf/momconf/diag_table`

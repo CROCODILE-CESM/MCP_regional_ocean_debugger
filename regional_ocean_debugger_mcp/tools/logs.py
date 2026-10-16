@@ -2,19 +2,26 @@
 
 import gzip
 import re
-import subprocess
 from pathlib import Path
+
+from .case_xml import case_dir_var
 
 # Patterns that indicate a fatal model error
 ERROR_PATTERNS = [
-    (re.compile(r"FATAL ERROR", re.IGNORECASE), "FATAL"),
-    (re.compile(r"ERROR:", re.IGNORECASE), "ERROR"),
+    # Case-sensitive: FMS/MOM6 aborts print "FATAL from PE n: ...", while every
+    # healthy ocn.log prints "Total Mass: ... Error: 0.0" conservation lines.
+    (re.compile(r"\bFATAL\b"), "FATAL"),
+    (re.compile(r"\bERROR\b"), "ERROR"),
     (re.compile(r"Abort called", re.IGNORECASE), "ABORT"),
     (re.compile(r"SIGTERM|SIGABRT|SIGSEGV", re.IGNORECASE), "SIGNAL"),
     (re.compile(r"NaN detected", re.IGNORECASE), "NaN"),
     (re.compile(r"CFL violation", re.IGNORECASE), "CFL"),
     (re.compile(r"Inf detected|infinity", re.IGNORECASE), "INF"),
-    (re.compile(r"negative thickness|negative depth", re.IGNORECASE), "NEGATIVE_THICKNESS"),
+    # MOM6's ALE regridding aborts with "adjust_interface_motion() - implied h<0 ..."
+    (
+        re.compile(r"negative thickness|negative depth|implied h<0", re.IGNORECASE),
+        "NEGATIVE_THICKNESS",
+    ),
     (re.compile(r"mass balance error|tracer budget error", re.IGNORECASE), "MASS_BALANCE"),
     (re.compile(r"out of memory|OOM", re.IGNORECASE), "OOM"),
     (re.compile(r"segmentation fault", re.IGNORECASE), "SEGFAULT"),
@@ -67,7 +74,7 @@ KNOWN_ERRORS = {
             "extract_forcings/raw_data/get_glorys_data.sh — there should be one per boundary per time chunk. "
             "If entries are missing, re-run process_forcings (it regenerates the script). "
             "For script-based GLORYS: run the generated get_glorys_data.sh, then call process_forcings "
-            "again with skip_get=True to proceed to regridding."
+            "again -- raw files already in raw_data/ are reused, so it goes straight to regridding."
         ),
     },
 }
@@ -78,24 +85,13 @@ def _archive_log_dir(case_dir: str) -> Path | None:
 
     st_archive moves run-dir logs out from under the case as soon as it runs,
     so a case that finished and archived successfully has no logs left in
-    case_dir or case_dir/run -- only under DOUT_S_ROOT/logs. Ask CIME for the
-    real DOUT_S_ROOT rather than guessing the scratch layout.
+    its RUNDIR -- only under DOUT_S_ROOT/logs. Read the case's own DOUT_S_ROOT
+    rather than guessing the scratch layout.
     """
-    case = Path(case_dir).expanduser()
-    try:
-        result = subprocess.run(
-            ["./xmlquery", "DOUT_S_ROOT", "--value"],
-            cwd=case,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception:
+    root = case_dir_var(case_dir, "DOUT_S_ROOT")
+    if root is None:
         return None
-    root = result.stdout.strip()
-    if not root:
-        return None
-    log_dir = Path(root) / "logs"
+    log_dir = root / "logs"
     return log_dir if log_dir.exists() else None
 
 
@@ -132,14 +128,14 @@ def _latest_batch_only(logs: list[Path]) -> list[Path]:
 def _find_logs(case_dir: str, component: str) -> list[Path]:
     case = Path(case_dir).expanduser()
     search_dirs = [case, case / "run", case / "logs"]
-    archive_dir = _archive_log_dir(case_dir)
-    if archive_dir is not None:
-        search_dirs.append(archive_dir)
+    # RUNDIR is $CIME_OUTPUT_ROOT/$CASE/run by default -- on scratch, not
+    # under case_dir -- and a failed run's logs stay there.
+    for d in (case_dir_var(case_dir, "RUNDIR"), _archive_log_dir(case_dir)):
+        if d is not None:
+            search_dirs.append(d)
 
     candidates = []
-    for d in search_dirs:
-        if not d.exists():
-            continue
+    for d in dict.fromkeys(d.resolve() for d in search_dirs if d.exists()):
         if component == "all":
             candidates.extend(d.glob("*.log*"))
         else:
@@ -154,7 +150,7 @@ def read_run_log(case_dir: str, component: str = "cesm", lines: int = 200) -> st
     Return recent lines from a CESM or MOM6 run log.
 
     component: 'cesm', 'ocn' (MOM6), 'atm', 'ice', 'rof', or 'all'.
-    Searches case_dir, case_dir/run/, and the archived logs directory
+    Searches case_dir, the case's RUNDIR, and the archived logs directory
     (DOUT_S_ROOT/logs, once st_archive has moved them) for log files.
     Returns the most recent match.
     """
@@ -173,7 +169,7 @@ def find_errors(case_dir: str) -> str:
     Scan all run logs in a CESM case for error indicators.
 
     Searches for FATAL, ERROR, NaN, CFL violations, negative thickness, OOM, and similar.
-    Searches case_dir, case_dir/run/, and the archived logs directory
+    Searches case_dir, the case's RUNDIR, and the archived logs directory
     (DOUT_S_ROOT/logs, once st_archive has moved them -- gzipped logs are
     transparently decompressed).
     Returns a structured list of matches with filename, line number, and error type.
@@ -210,9 +206,8 @@ def classify_error(error_text: str) -> str:
     """
     matched = []
     for label, info in KNOWN_ERRORS.items():
-        # Check if the label pattern matches the error text
-        pattern, _ = next((p, l) for p, l in ERROR_PATTERNS if l == label)
-        if pattern.search(error_text):
+        # A label can have several patterns (e.g. OBC_PREPROCESS); any may match
+        if any(p.search(error_text) for p, l in ERROR_PATTERNS if l == label):
             matched.append(f"**{label}**\nCause: {info['cause']}\nFix: {info['fix']}")
 
     if not matched:
@@ -224,6 +219,11 @@ def classify_error(error_text: str) -> str:
     return "\n\n".join(matched)
 
 
+def _sized(f: Path) -> str:
+    size = f.stat().st_size
+    return f"{'OK' if size > 1000 else 'EMPTY/CORRUPT'}: {f.name} ({size} bytes)"
+
+
 def check_obc_forcing_status(inputdir: str) -> str:
     """
     Check the status of OBC forcing preprocessing for a CrocoDash case.
@@ -233,7 +233,10 @@ def check_obc_forcing_status(inputdir: str) -> str:
     - Which boundaries are expected (from boundary_number_conversion in config)
     - Whether the GLORYS download script exists and how many boundary entries it has
     - Which raw OBC files exist vs expected
-    - Which regridded OBC segment files exist in ocnice/
+    - Which regridded OBC segment files exist in ocn/
+    - The initial condition's raw file and its regridded init_*.nc files in ocn/
+    - WW3 boundary spectra in wav/ (ww3.point*_spec.nc vs spec.list), for WW3 cases
+    - The CICE forcing file ice/cice_forcing.nc, for CICE cases
 
     Pass the case inputdir path (e.g. ~/scratch/croc_input/my_case).
     """
@@ -280,13 +283,14 @@ def check_obc_forcing_status(inputdir: str) -> str:
     else:
         lines.append("\nGLORYS script: NOT FOUND (process_forcings not yet run, or uses RDA method)")
 
-    # Raw OBC files
+    # Raw OBC files (the IC's ic_unprocessed*.nc sits beside them; reported below)
     raw_dir = extract_dir / "raw_data"
-    raw_files = sorted(raw_dir.glob("*_unprocessed*.nc")) if raw_dir.exists() else []
+    raw_all = sorted(raw_dir.glob("*_unprocessed*.nc")) if raw_dir.exists() else []
+    raw_ic = [f for f in raw_all if f.name.startswith("ic_unprocessed")]
+    raw_files = [f for f in raw_all if f not in raw_ic]
     lines.append(f"\nRaw OBC files ({len(raw_files)} found):")
     for f in raw_files:
-        size = f.stat().st_size
-        lines.append(f"  {'OK' if size > 1000 else 'EMPTY/CORRUPT'}: {f.name} ({size} bytes)")
+        lines.append(f"  {_sized(f)}")
 
     # Regridded OBC segment files (ocn/ now; ocnice/ or ocean/ on older cases)
     ocn_dir = next(
@@ -300,5 +304,66 @@ def check_obc_forcing_status(inputdir: str) -> str:
 
     if not seg_files:
         lines.append("  NONE — regridding and merging not yet complete.")
+
+    lines.append("\nInitial condition:")
+    for f in raw_ic:
+        lines.append(f"  raw {_sized(f)}")
+    if not raw_ic:
+        lines.append("  raw: NONE in raw_data/")
+    ic_files = sorted(ocn_dir.glob("init_*.nc")) if ocn_dir.exists() else []
+    ic_names = ", ".join(f.name for f in ic_files) or "NONE"
+    lines.append(f"  regridded in {ocn_dir.name}/: {ic_names}")
+
+    # WW3 boundary spectra: CrocoDash's ww3 forcing writes ww3.point<N>_spec.nc,
+    # spec.list (which lists them) and ww3_bounc.nml into <inputdir>/wav.
+    wav_dir = inputdir_path / "wav"
+    if "ww3" in config or wav_dir.exists():
+        product = config.get("ww3", {}).get("inputs", {}).get("ww3_obc_product_name")
+        lines.append(f"\nWW3 boundary spectra in wav/ (product: {product}):")
+        if product == "none":
+            lines.append(
+                "  Disabled (ww3_obc_product_name='none'): open boundary stays calm."
+            )
+        spectra = sorted(wav_dir.glob("ww3.point*_spec.nc")) if wav_dir.exists() else []
+        lines.append(f"  ww3.point*_spec.nc files: {len(spectra)}")
+        spec_list = wav_dir / "spec.list"
+        if spec_list.exists():
+            listed = spec_list.read_text().split()
+            missing = [n for n in listed if not (wav_dir / n).exists()]
+            lines.append(f"  spec.list: {len(listed)} entries, {len(missing)} missing")
+            for n in missing[:10]:
+                lines.append(f"    MISSING: {n}")
+        else:
+            lines.append("  spec.list: NOT FOUND")
+        for name in ("ww3_bounc.nml", "ww3_grid.inp"):
+            found = "OK" if (wav_dir / name).exists() else "NOT FOUND"
+            lines.append(f"  {name}: {found}")
+        nest = sorted(wav_dir.glob("nest*")) if wav_dir.exists() else []
+        if nest:
+            lines.append(f"  nest files: {', '.join(f.name for f in nest)}")
+        if product != "none" and not spectra:
+            lines.append("  NONE — process_forcings (ww3) not yet run.")
+
+    # CICE: a single restoring/IC file <inputdir>/ice/cice_forcing.nc, written
+    # only when cice_product_name/cice_function_name were given.
+    ice_dir = inputdir_path / "ice"
+    if "cice" in config or ice_dir.exists():
+        cice = config.get("cice", {})
+        product = cice.get("inputs", {}).get("cice_product_name")
+        ice_ic = cice.get("outputs", {}).get("ice_ic")
+        lines.append(f"\nCICE forcing in ice/ (product: {product}, ice_ic: {ice_ic}):")
+        forcing = ice_dir / "cice_forcing.nc"
+        if forcing.exists():
+            lines.append(f"  {_sized(forcing)}")
+        elif product:
+            lines.append(
+                "  MISSING: cice_forcing.nc — process_forcings (cice) not yet run."
+            )
+        else:
+            lines.append(
+                "  None: restoring off (no cice_product_name), ice_ic stays 'default'."
+            )
+        grids = sorted(ice_dir.glob("cice_grid_*.nc")) if ice_dir.exists() else []
+        lines.append(f"  grid: {', '.join(f.name for f in grids) or 'NOT FOUND'}")
 
     return "\n".join(lines)
