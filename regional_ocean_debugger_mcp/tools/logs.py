@@ -180,7 +180,9 @@ def find_errors(case_dir: str) -> str:
     if not logs:
         return f"No log files found in {case_dir}"
 
-    findings = []
+    # Every MPI rank prints the same abort, so group lines that differ only in
+    # host/rank/PE/job id/timestamp and report each message once with a count.
+    groups = {}
     for log in logs[:10]:  # cap at 10 most recent logs
         try:
             text = _read_text(log)
@@ -189,12 +191,37 @@ def find_errors(case_dir: str) -> str:
         for lineno, line in enumerate(text.splitlines(), 1):
             for pattern, label in ERROR_PATTERNS:
                 if pattern.search(line):
-                    findings.append(f"[{label}] {log.name}:{lineno}: {line.strip()}")
+                    key = (label, _rank_agnostic(line))
+                    if key in groups:
+                        groups[key][1] += 1
+                    else:
+                        groups[key] = [f"{log.name}:{lineno}: {line.strip()}", 1]
                     break
 
-    if not findings:
+    if not groups:
         return "No errors found in run logs. Model may have completed successfully."
+    findings = [
+        f"[{label}] {first}" + (f"  (x{n} lines, other ranks/PEs)" if n > 1 else "")
+        for (label, _), (first, n) in groups.items()
+    ]
     return "\n".join(findings[:100])  # cap output
+
+
+_RANK_NOISE = [
+    (re.compile(r"^\S+\s+\d+:\s*"), ""),  # "<host> <rank>: " prefix in cesm.log
+    (re.compile(r"\bPE\s+\d+"), "PE #"),
+    (re.compile(r"\b[Rr]ank\s+\d+"), "rank #"),
+    (re.compile(r"\bprocess\s+\d+"), "process #"),
+    (re.compile(r"\[job id [^\]]*\]"), ""),
+    (re.compile(r"\[\w{3} \w{3} [^\]]*\d{4}\]"), ""),  # [Mon Oct 12 16:41:21 2026]
+    (re.compile(r"\[[a-z]+\d+\]"), ""),  # node name, e.g. [dec2443]
+]
+
+
+def _rank_agnostic(line: str) -> str:
+    for pattern, repl in _RANK_NOISE:
+        line = pattern.sub(repl, line)
+    return " ".join(line.split())
 
 
 def classify_error(error_text: str) -> str:
